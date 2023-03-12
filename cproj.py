@@ -5,10 +5,10 @@ class Project(cbuild.{}):
 		self.dependencies = {}
 
 	def compile(self, config):
-		self.ProjectCompile(config)
+		super().compile(config)
 
 	def clear(self, config):
-		self.ProjectClear(config)
+		super().clear(config)
 
 	def recompile(self, config):
-		self.ProjectRecompile(config)
+		super().recompile(config)

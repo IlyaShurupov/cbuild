@@ -1,0 +1,7 @@
+{
+  "llvm": {
+      "clang++": "clang++",
+      "llvm-ar": "llvm-ar",
+      "lldb": "lldb"
+  }
+}

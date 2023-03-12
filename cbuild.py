@@ -1,49 +1,46 @@
 import os
 import sys
 import importlib.util
-import CbuildProjects as cbuild
+import CbuildProjects
 import shutil
+import BuildConfiguration
+import Errors
+import Toolchain
 
-def loadProject(directory):
+
+def load_project(directory):
 	module_file = os.path.join(directory, "cproj.py")
-	
 	if not os.path.exists(module_file):
-		return None
-
+		raise Errors.CBuildError(f"No project file in {directory}")
 	# load module
 	module_name = module_file
 	spec = importlib.util.spec_from_file_location(module_name, module_file)
 	module = importlib.util.module_from_spec(spec)
-
 	# pass arguments to the module
-	module.cbuild = cbuild
-	cbuild.project_directory = os.path.abspath(directory)
-
+	module.cbuild = CbuildProjects
+	CbuildProjects.global_project_directory = os.path.abspath(directory)
 	# execute module
 	spec.loader.exec_module(module)
-
 	# initialize project
 	project = module.Project()
-	project.ProjectLoadDependencies(cbuild)
-
+	project.load_dependencies(CbuildProjects)
 	return project
 
-def initCmd(args):
+
+def init_cmd(args):
 	current_file_dir = os.path.dirname(os.path.abspath(__file__))
 	directory = args["directory"]
-	project = loadProject(directory)
 
-	if project:
-		print("Project Already Exists")
-	# Create the file in the specified directory with the given name
-	filename = os.path.join(directory, "cproj.py")
-	
+	project_file = os.path.join(directory, "cproj.py")
+	if os.path.exists(project_file):
+		raise Errors.CBuildError("Project file already exists")
+
 	if not os.path.exists(directory):
 		os.makedirs(directory)
 
-	with open(filename, "w") as f:
+	with open(project_file, "w") as f:
 		# Write the initial code to the file
-		project_type = getattr(cbuild, args["type"].capitalize() + "Project")
+		project_type = getattr(CbuildProjects, args["type"].capitalize() + "Project")
 		project_sample_source = open(os.path.join(current_file_dir, 'cproj.py'), 'r').read()
 		f.write(project_sample_source.format(project_type.__name__, args["name"], str(args["dep"])))
 
@@ -68,88 +65,71 @@ def initCmd(args):
 			shutil.copy(os.path.join(current_file_dir, "Library.hpp"), header_path)
 
 
-def getConfig(args):
-	config = cbuild.BuildConfiguration()
+def get_config(args):
+	config = BuildConfiguration.CompilationProperties()
 	if args["cfg"]:
-		if not config.load(args["directory"], args["cfg"]):
-			cfg_name = args["cfg"]
-			print(f"Could not load configuration {cfg_name}")
-			return
+		config.load(args["directory"], args["cfg"])
 	return config
 
-def compileCmd(args):
-	project = loadProject(args["directory"])
-	if not project:
-		print("Could not load project")
-		return
 
-	if cfg := getConfig(args): 
-		project.compile(cfg)
+def compile_cmd(args):
+	load_project(args["directory"]).compile(get_config(args))
 
-def runCmd(args):
-	project = loadProject(args["directory"])
-	if not project:
-		print("Could not load project")
-		return
 
-	if cfg := getConfig(args): 
-		project.compile(cfg)
-		project.ProjectRun(cfg)
+def run_cmd(args):
+	project = load_project(args["directory"])
+	cfg = get_config(args)
+	project.compile(cfg)
+	project.ProjectRun(cfg)
 
-def clearCmd(args):
-	project = loadProject(args["directory"])
-	if not project:
-		print("Could not load project")
-		return
 
-	if cfg := getConfig(args): 
-		project.clear(cfg)
+def clear_cmd(args):
+	load_project(args["directory"]).clear(get_config(args))
 
-def makeCfgCmd(args):
-	cfg = cbuild.BuildConfiguration()
-	cfg.read_from_comsole()
+
+def make_cfg_cmd(args):
+	cfg = BuildConfiguration.CompilationProperties()
+	cfg.read()
 	name = input("Configuration name:")
 	cfg.save(args["directory"], name)
 
+
 commands = {
 	"init": {
-		"exec": initCmd,
+		"exec": init_cmd,
 		"args": {
-			"name": { "required": False, "default" : "TempProject" },
-			"type": { "required": False, "default": "binary" },
-			"dep": { "required": False, "default": [] },
-			"files" : { "required": False, "default": True }
+			"name": {"required": False, "default": "TempProject"},
+			"type": {"required": False, "default": "binary"},
+			"dep": {"required": False, "default": []},
+			"files": {"required": False, "default": True}
 		},
 	},
-	"compile" : { "exec" : compileCmd, "args" : { "cfg" : { "required": False, "default" : None } } },
-	"run" : { "exec" : runCmd, "args" : { "cfg" : { "required": False, "default" : None } }, },
-	"makecfg" : {  "exec" : makeCfgCmd,  "args" : {} },
-	"clear" : { "exec" : clearCmd, "args" : { "cfg" : { "required": False, "default" : None } } },
-	"exit" : { "exec" : lambda : exit(0), "args" : {}	}
+	"compile": {"exec": compile_cmd, "args": {"cfg": {"required": False, "default": None}}},
+	"run": {"exec": run_cmd, "args": {"cfg": {"required": False, "default": None}}},
+	"configure": {"exec": make_cfg_cmd, "args": {}},
+	"clear": {"exec": clear_cmd, "args": {"cfg": {"required": False, "default": None}}},
+	"exit": {"exec": lambda: exit(0), "args": {}}
 }
 
-def parseCommandLine(cmd_args):
-	directory = None
+
+def parse_command(cmd_args):
 	args_idx = 3
 
 	if len(cmd_args) < 2:
-		print("Expected working directory (optional) and a command")
-		return
+		raise Errors.CBuildError("Expected working directory (optional) and a command")
 
 	command = cmd_args[1]
 	if command in commands:
-		directory = "."
+		directory = os.path.abspath(".")
 		args_idx -= 1
 	else:
-		directory = cmd_args[1]
+		directory = os.path.abspath(cmd_args[1])
 		command = cmd_args[2]
 		if not os.path.exists(directory):
-			print(f"Given path does not exists. Automatically creating working directory \"{directory}\"")
+			Errors.warn(f"Given path does not exists. Automatically creating working directory \"{directory}\"")
 			os.makedirs(directory)
 		if command not in commands:
-			print(f"Command {command} is not recognized")
-			print(f"Commands are: \n", commands)
-			return
+			raise Errors.CBuildError(f"Command {command} is not recognized\n Commands are: {commands}")
 	
 	args = {}
 	for arg in cmd_args[args_idx:]:
@@ -158,32 +138,35 @@ def parseCommandLine(cmd_args):
 			name = name.strip()
 			value = value.strip()
 			if name not in commands[command]["args"]:
-				print(f"Argument {name} is not recognized for command {command}")
-				return
+				Errors.warn(f"Argument {name} is not recognized for command {command}")
 			if name in args:
-				print(f"Argument {name} passed more than one time")
-				return
-			args[name] = value
+				args[name] = value
 		else:
-			print("Invalid Syntax must be name:value ")
-			return
+			raise Errors.CBuildError("Invalid Syntax must be name:value ")
 
 	for arg_name, arg_info in commands[command]["args"].items():
 		if arg_name not in args:
 			if arg_info["required"]:
-				print(f"Argument {arg_name} is required for command {command}")
-				return
-			else:
-				args[arg_name] = arg_info["default"]
+				raise Errors.CBuildError(f"Argument {arg_name} is required for command {command}")
+			args[arg_name] = arg_info["default"]
 
 	args["directory"] = directory
 	return {"command": command, "args": args}
 
 
-#sys.argv += "example/libExample init name:Util type:library".split() if len(sys.argv) < 2 else []
-#sys.argv += "example/binExample compile cfg:Debi64".split() if len(sys.argv) < 2 else []
-sys.argv += "example/binExample clear cfg:Debi64".split() if len(sys.argv) < 2 else []
+def run():
+	# sys.argv += "example/binExample init name:App type:binary".split() if len(sys.argv) < 2 else []
+	sys.argv += "example/binExample compile cfg:Debi64".split() if len(sys.argv) < 2 else []
+	# sys.argv += "example/binExample clear cfg:Debi64".split() if len(sys.argv) < 2 else []
+	# sys.argv += "example/binExample configure".split() if len(sys.argv) < 2 else []
 
-# parse and execute command		
-command = parseCommandLine(sys.argv)
-res = commands[command["command"]]["exec"](command["args"]) if command else 0
+	try:
+		# parse and execute command
+		command = parse_command(sys.argv)
+		commands[command["command"]]["exec"](command["args"]) if command else None
+
+	except (Errors.CBuildError, Toolchain.ToolchainError) as error:
+		Errors.err(f"Unsuccessful run : {error.message}")
+
+
+run()
