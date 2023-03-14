@@ -1,0 +1,2 @@
+#!/bin/bash
+python3 /media/ilusha/main/data/tmp/desktop/cbuild/cbuild.py "$@"

@@ -1,7 +1,16 @@
 import os
 import json
+import subprocess
 
 global_toolchains = None
+
+
+def is_program_valid(program_name):
+	try:
+		with open(os.devnull, 'w') as devnull:
+			return subprocess.call(["which", program_name], stdout=devnull, stderr=devnull) == 0
+	except OSError:
+		return False
 
 
 def load():
@@ -11,12 +20,12 @@ def load():
 		global_toolchains = json.load(f)
 
 	# check if exists
-	for key, toolchain in global_toolchains:
-		for tool in toolchain.keys():
-			if not os.path.exists(toolchain[tool]):
+	for key, toolchain in global_toolchains.items():
+		for tool_name, tool_path in toolchain.items():
+			if not is_program_valid(tool_path):
 				if not ("unresolved" in toolchain):
 					toolchain["unresolved"] = []
-				toolchain["unresolved"].append(tool)
+				toolchain["unresolved"].append(tool_name)
 
 
 load()

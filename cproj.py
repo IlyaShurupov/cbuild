@@ -2,10 +2,9 @@ class Project(cbuild.{}):
 	def __init__(self):
 		super().__init__()
 		self.name = "{}"
-		self.dependencies = {}
 
-	def compile(self, config):
-		super().compile(config)
+	def compile(self, config, forced=False) -> (bool, bool):
+		return super().compile(config, forced)
 
 	def clear(self, config):
 		super().clear(config)

@@ -6,6 +6,7 @@ import shutil
 import BuildConfiguration
 import Errors
 import Toolchain
+import json
 
 
 def load_project(directory):
@@ -42,9 +43,9 @@ def init_cmd(args):
 		# Write the initial code to the file
 		project_type = getattr(CbuildProjects, args["type"].capitalize() + "Project")
 		project_sample_source = open(os.path.join(current_file_dir, 'cproj.py'), 'r').read()
-		f.write(project_sample_source.format(project_type.__name__, args["name"], str(args["dep"])))
+		f.write(project_sample_source.format(project_type.__name__, args["name"]))
 
-	if args["files"]:
+	if args["add-files"] != "False":
 		if args["type"] == "binary":
 			out_dir = os.path.join(directory, "private")
 			if not os.path.exists(out_dir):
@@ -67,8 +68,14 @@ def init_cmd(args):
 
 def get_config(args):
 	config = BuildConfiguration.CompilationProperties()
-	if args["cfg"]:
+	cbuild_config = os.path.join(os.path.dirname(os.path.abspath(__file__)), args["cfg"] + ".json")
+	user_config = os.path.join(args["directory"], args["cfg"] + ".json")
+
+	if os.path.exists(user_config):
 		config.load(args["directory"], args["cfg"])
+	else:
+		config.load(os.path.dirname(os.path.abspath(__file__)), args["cfg"])
+
 	return config
 
 
@@ -76,11 +83,22 @@ def compile_cmd(args):
 	load_project(args["directory"]).compile(get_config(args))
 
 
+def recompile_cmd(args):
+	load_project(args["directory"]).compile(get_config(args), True)
+
+
 def run_cmd(args):
 	project = load_project(args["directory"])
 	cfg = get_config(args)
 	project.compile(cfg)
-	project.ProjectRun(cfg)
+	project.run(cfg)
+
+
+def debug_cmd(args):
+	project = load_project(args["directory"])
+	cfg = get_config(args)
+	project.compile(cfg)
+	project.debug(cfg)
 
 
 def clear_cmd(args):
@@ -94,79 +112,121 @@ def make_cfg_cmd(args):
 	cfg.save(args["directory"], name)
 
 
-commands = {
-	"init": {
-		"exec": init_cmd,
-		"args": {
-			"name": {"required": False, "default": "TempProject"},
-			"type": {"required": False, "default": "binary"},
-			"dep": {"required": False, "default": []},
-			"files": {"required": False, "default": True}
-		},
-	},
-	"compile": {"exec": compile_cmd, "args": {"cfg": {"required": False, "default": None}}},
-	"run": {"exec": run_cmd, "args": {"cfg": {"required": False, "default": None}}},
-	"configure": {"exec": make_cfg_cmd, "args": {}},
-	"clear": {"exec": clear_cmd, "args": {"cfg": {"required": False, "default": None}}},
-	"exit": {"exec": lambda: exit(0), "args": {}}
+def set_cfg_cmd(args):
+	file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "DefaultConfig.json")
+	with open(file_path, 'w') as file:
+		json.dump({"default-config": args["cfg"]}, file)
+
+
+commands = {}
+
+
+def initialize_commands():
+	global commands
+
+	default_config_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "DefaultConfig.json")
+	with open(default_config_file) as f:
+		config = json.load(f)
+	default_config_name = config["default-config"]
+
+	commands = {
+		"init": {"exec": init_cmd, "args": {"name": None, "type": None, "add-files": "False"}},
+		"configure": {"exec": make_cfg_cmd, "args": {}},
+		"compile": {"exec": compile_cmd, "args": {"cfg": default_config_name}},
+		"clear": {"exec": clear_cmd, "args": {"cfg": default_config_name}},
+		"recompile": {"exec": recompile_cmd, "args": {"cfg": default_config_name}},
+		"run": {"exec": run_cmd, "args": {"cfg": default_config_name}},
+		"debug": {"exec": debug_cmd, "args": {"cfg": default_config_name}},
+		"set-default-config": {"exec": set_cfg_cmd, "args": {"cfg": None}},
+	}
+
+
+command_macros = {
+	"init": ["i", "ini", "initialize"],
+	"configure": ["cfg", "config"],
+	"compile": ["c", "build", "b"],
+	"clear": ["clean", "del", "delete"],
+	"recompile": ["rebuild", "rb", "rc"],
+	"run": ["r"],
+	"debug": ["dbg", "deb"],
+	"set-default-config": ["set"]
 }
 
 
-def parse_command(cmd_args):
-	args_idx = 3
+def command_descr(cmd_name, cmd) -> str:
+	args = cmd['args']
+	out = f"{cmd_name} {command_macros[cmd_name]}:\n"
+	if args:
+		for arg_name, arg_val in args.items():
+			default_val = str(arg_val) if arg_val is not None else "(required)"
+			out += f"\t{arg_name} : {default_val}\n"
+	else:
+		out += "\tNo arguments\n"
+	return out
 
+
+def commands_descr() -> str:
+	out = "Commands:\n"
+	for cmd_name, cmd in commands.items():
+		out += command_descr(cmd_name, cmd)
+	return out
+
+
+def parse_command(cmd_args):
 	if len(cmd_args) < 2:
-		raise Errors.CBuildError("Expected working directory (optional) and a command")
+		raise Errors.CBuildError("\nInvalid invocation. Must be <working-directory> <command-name> <arg-1> ... <arg-n>")
+
+	directory = cmd_args[0]
+	if not os.path.exists(directory):
+		raise Errors.CBuildError(f"\nSpecified working directory does not exists. Given '{directory}'")
 
 	command = cmd_args[1]
-	if command in commands:
-		directory = os.path.abspath(".")
-		args_idx -= 1
-	else:
-		directory = os.path.abspath(cmd_args[1])
-		command = cmd_args[2]
-		if not os.path.exists(directory):
-			Errors.warn(f"Given path does not exists. Automatically creating working directory \"{directory}\"")
-			os.makedirs(directory)
-		if command not in commands:
-			raise Errors.CBuildError(f"Command {command} is not recognized\n Commands are: {commands}")
-	
-	args = {}
-	for arg in cmd_args[args_idx:]:
-		if ':' in arg:
-			name, value = arg.split(':')
-			name = name.strip()
-			value = value.strip()
-			if name not in commands[command]["args"]:
-				Errors.warn(f"Argument {name} is not recognized for command {command}")
-			if name in args:
-				args[name] = value
-		else:
-			raise Errors.CBuildError("Invalid Syntax must be name:value ")
+	if not (command in commands):
+		for name, val in command_macros.items():
+			for macro in val:
+				if macro == command:
+					command = name
+					break
 
-	for arg_name, arg_info in commands[command]["args"].items():
-		if arg_name not in args:
-			if arg_info["required"]:
-				raise Errors.CBuildError(f"Argument {arg_name} is required for command {command}")
-			args[arg_name] = arg_info["default"]
+		if not (command in commands):
+			raise Errors.CBuildError(f"\nCant resolve command.\n {commands_descr()}")
+
+	args = {}
+	args_passed = [arg for arg in cmd_args[2:]]
+	for arg_name, arg_val in commands[command]["args"].items():
+		if not(arg_val is None):
+			if not len(args_passed):
+				args[arg_name] = arg_val
+			else:
+				args[arg_name] = args_passed.pop(0)
+		else:
+			if not len(args_passed):
+				raise Errors.CBuildError(f"\nToo few arguments given for the command: {command_descr(command, commands[command])}")
+			else:
+				args[arg_name] = args_passed.pop(0)
+
+	if len(args_passed):
+		raise Errors.CBuildError(f"\nToo many arguments given:\n for command: {command_descr(command, commands[command])}")
 
 	args["directory"] = directory
 	return {"command": command, "args": args}
 
 
 def run():
-	# sys.argv += "example/binExample init name:App type:binary".split() if len(sys.argv) < 2 else []
-	sys.argv += "example/binExample compile cfg:Debi64".split() if len(sys.argv) < 2 else []
-	# sys.argv += "example/binExample clear cfg:Debi64".split() if len(sys.argv) < 2 else []
-	# sys.argv += "example/binExample configure".split() if len(sys.argv) < 2 else []
+	# sys.argv += "example/App init App binary true".split()
+	# sys.argv += "example/App c".split()
+	# sys.argv += "example/binExample clear cfg:Debi64".split()
+	# sys.argv += "example/App debug cfg:Debug-Intel-64".split()
+	# sys.argv += ". configure".split()
 
 	try:
 		# parse and execute command
-		command = parse_command(sys.argv)
+		command = parse_command(sys.argv[1:])
 		commands[command["command"]]["exec"](command["args"]) if command else None
 
 	except (Errors.CBuildError, Toolchain.ToolchainError) as error:
-		Errors.err(f"Unsuccessful run : {error.message}")
+		Errors.err(f"Unsuccessful run : {error}")
 
 
+initialize_commands()
 run()

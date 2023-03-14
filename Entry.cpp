@@ -2,5 +2,5 @@
 #include <iostream>
 
 int main() {
-	std::cout << "entry";
+	std::cout << "Hello from entry\n";
 }

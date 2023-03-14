@@ -2,9 +2,14 @@ import os
 import shutil
 import importlib.util
 from pathlib import Path
+import Errors
 import Toolchain
 
-global_project_directory = None
+global_project_directory = "."
+
+
+def file_mod_time(path):
+	return Path(path).stat().st_mtime
 
 
 class BaseProject:
@@ -54,23 +59,20 @@ class BaseProject:
 
 			# Initialize project and add it to dependencies
 			project = module.Project()
-			project.project_load_dependencies(module_self)
+			project.load_dependencies(module_self)
 			dependencies.append(project)
 
 		self.dependencies = dependencies
 		self.pop_wd(wd)
 
 	def absolute_lib_dir(self, config):
-		cfg_name = config.config["name"]
-		return os.path.join(self.project_path, self.library_output_directory, f"{self.name}_{cfg_name}")
+		return os.path.join(self.project_path, self.library_output_directory, f"{self.name}-{config.name}")
 
 	def absolute_bin_dir(self, config):
-		cfg_name = config.config["name"]
-		return os.path.join(self.project_path, self.output_directory, f"{self.name}_{cfg_name}")
+		return os.path.join(self.project_path, self.output_directory, f"{self.name}-{config.name}")
 
 	def absolute_temp_dir(self, config):
-		cfg_name = config.config["name"]
-		return os.path.join(self.project_path, self.temp_directory, f"{self.name}_{cfg_name}")
+		return os.path.join(self.project_path, self.temp_directory, f"{self.name}-{config.name}")
 
 	def available_includes(self) -> list:
 		includes = [os.path.join(self.project_path, include_dir) for include_dir in self.public_directories]
@@ -79,7 +81,7 @@ class BaseProject:
 		return includes
 
 	def available_libraries(self, config) -> (list, list):
-		libs = [self.name + ".lib"] + self.additional_libraries
+		libs = [Toolchain.library_name(self.name)] + self.additional_libraries
 		lib_dirs = [self.absolute_lib_dir(config)] + self.additional_lib_dirs
 		for dep in self.dependencies:
 			dep_libs, dep_lib_dirs = dep.available_libraries(config)
@@ -87,16 +89,20 @@ class BaseProject:
 			lib_dirs += dep_lib_dirs
 		return libs, lib_dirs
 
+	def success_time(self, config) -> int:
+		return 0
+
 	def compile_sources(self, forced, config) -> (bool, bool, list):
 		wd = self.push_wd()
 
-		exe_path = os.path.join(self.absolute_bin_dir(config), self.name + ".exe")
-		bin_path = os.path.join(self.absolute_bin_dir(config), self.name + ".dll")
-		lib_path = os.path.join(self.absolute_lib_dir(config), self.name + ".lib")
+		if self.success_time(config):
+			if self.success_time(config) < file_mod_time(os.path.join(global_project_directory, "cproj.py")):
+				Errors.log("Forcing rebuild of sources as project file has changed", 0)
+				forced = True
 
-		success_time = max([Path(path).stat().st_mtime for path in [exe_path, bin_path, lib_path] if os.path.exists(path)], default=0)
-		header_times = [Path(header).stat().st_mtime for header in self.headers]
-		source_times = [Path(source).stat().st_mtime for source in self.sources]
+		success_time = self.success_time(config)
+		header_times = [file_mod_time(header) for header in self.headers]
+		source_times = [file_mod_time(source) for source in self.sources]
 
 		api_changed = any(header > success_time for header in header_times)
 		src_changed = any(source > success_time for source in source_times)
@@ -106,9 +112,13 @@ class BaseProject:
 
 		toolchain = Toolchain.get(config)
 
+		forced |= api_changed
+
 		for source, output, time in zip(self.sources, outputs, source_times):
-			if forced or api_changed or time > success_time:
+			if forced or time > success_time:
 				toolchain.compile_object(source, output, includes, self.preprocessor_definitions, config)
+				Errors.log(f"{source} -> {os.path.relpath(output, self.project_path)}", 0)
+				src_changed = True
 
 		self.pop_wd(wd)
 		return api_changed, src_changed, outputs
@@ -141,14 +151,22 @@ class LibraryProject(BaseProject):
 	def __init__(self):
 		super().__init__()
 
-	def compile(self, config):
+	def output_file(self, config):
+		return os.path.join(self.absolute_lib_dir(config), Toolchain.library_name(self.name))
+
+	def success_time(self, config):
+		lib_path = self.output_file(config)
+		return file_mod_time(lib_path) if os.path.exists(lib_path) else 0
+
+	def compile(self, config, forced=False):
 		wd = self.push_wd()
+		Errors.log(f" == Building \'{self.name}\' == ", 0)
 
 		dep_api_changed = False
 		dep_lib_changed = False
 		
 		for dep in self.dependencies:
-			api_change, lib_change = dep.ProjectCompile(config)
+			api_change, lib_change = dep.ProjectCompile(config, forced)
 			dep_api_changed |= api_change
 			dep_lib_changed |= lib_change
 
@@ -156,11 +174,12 @@ class LibraryProject(BaseProject):
 
 		if self_lib_changed or self_api_changed or dep_api_changed or dep_lib_changed:
 			toolchain = Toolchain.get(config)
-			library_file = os.path.join(self.absolute_lib_dir(config), self.name + ".lib")
+			library_file = self.output_file(config)
 			toolchain.package_objects(objects, library_file, config)
+			Errors.log(f"{os.path.relpath(library_file, self.project_path)}", 0)
 
 		self.pop_wd(wd)
-		return self_api_changed, self_lib_changed or dep_lib_changed
+		return self_api_changed, (self_lib_changed or dep_lib_changed)
 
 
 class BinaryProject(BaseProject):
@@ -168,32 +187,61 @@ class BinaryProject(BaseProject):
 		super().__init__()
 
 	def output_file(self, config):
-		return os.path.join(self.absolute_bin_dir(config), self.name + ".exe")
+		return os.path.join(self.absolute_bin_dir(config), Toolchain.executable_name(self.name))
 
-	def compile(self, config):
+	def success_time(self, config):
+		path = self.output_file(config)
+		return file_mod_time(path) if os.path.exists(path) else 0
+
+	def compile(self, config, forced=False):
 		wd = self.push_wd()
+		Errors.log(f" == Building \'{self.name}\' == ", 0)
+
+		if self.success_time(config):
+			if os.path.exists(config.name + ".json") and self.success_time(config) < file_mod_time(config.name + ".json"):
+				Errors.log("Forcing recursive rebuild as configuration has changed since last successful run", 0)
+				forced = True
 
 		dep_api_changed = False
 		dep_lib_changed = False
-		for dep in self.dependencies:
-			api_change, lib_change = dep.ProjectCompile(config)
-			dep_api_changed |= api_change
-			dep_lib_changed |= lib_change
 
-		self_api_changed, self_lib_changed, objects = self.compile_sources(dep_api_changed, config)
+		if len(self.dependencies):
+			Errors.log("Building dependencies", 1)
+			for dep in self.dependencies:
+				api_change, lib_change = dep.compile(config, forced)
+				dep_api_changed |= api_change
+				dep_lib_changed |= lib_change
+			Errors.log("Done building dependencies", 1)
 
-		if self_lib_changed or dep_lib_changed or dep_api_changed or self_api_changed:
+		if dep_api_changed:
+			Errors.log(f"Forcing rebuild of \'{self.name}\' as api of dependencies has changed", 1)
+			forced = True
+
+		self_api_changed, self_lib_changed, objects = self.compile_sources(forced, config)
+
+		if self_lib_changed or dep_lib_changed or dep_api_changed or self_api_changed or forced:
 			toolchain = Toolchain.get(config)
 
 			# create static library
-			toolchain.package_objects(objects, os.path.join(self.absolute_lib_dir(config), self.name + ".lib"), config)
+			library_output = os.path.join(self.absolute_lib_dir(config), Toolchain.library_name(self.name))
+			toolchain.package_objects(objects, library_output, config)
+			Errors.log(f"{os.path.relpath(library_output, self.project_path)}", 0)
+
 			# create executable
 			libraries, library_search_directories = self.available_libraries(config)
+			libraries.remove(Toolchain.library_name(self.name))
+			library_search_directories.remove(self.absolute_lib_dir(config))
 			toolchain.link_objects(objects, self.output_file(config), libraries, library_search_directories, config)
+			Errors.log(f"{os.path.relpath(self.output_file(config), self.project_path)}", 0)
 
 		self.pop_wd(wd)
 
 	def run(self, config):
 		wd = self.push_wd()
 		Toolchain.get(config).run(self.output_file(config))
+		self.pop_wd(wd)
+
+	def debug(self, config):
+		wd = self.push_wd()
+		Toolchain.get(config).debug(self.output_file(config))
 		self.pop_wd(wd)

@@ -1,5 +1,5 @@
 
-global_verbose_level = 0
+global_verbose_level = 3
 
 
 class CBuildError(Exception):
@@ -8,7 +8,7 @@ class CBuildError(Exception):
 
 
 def log(message, verbose_level: int = 0):
-	if verbose_level >= global_verbose_level:
+	if verbose_level < global_verbose_level:
 		print(message)
 
 

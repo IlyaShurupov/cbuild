@@ -79,9 +79,10 @@ class CompilationProperties:
 				continue
 			valid_values = self.interface[option]
 			value = input(f"{option} ({', '.join(valid_values)}, default {getattr(self, option)}): ")
-			while value not in valid_values:
-				value = input(f"Invalid value for {option}. Please enter a valid value : ")
-			setattr(self, option, value)
+			if value:
+				while value not in valid_values:
+					value = input(f"Invalid value for {option}. Please enter a valid value : ")
+				setattr(self, option, value)
 
 	def save(self, absolute_directory_path, config_name):
 		file_path = os.path.join(absolute_directory_path, config_name + ".json")

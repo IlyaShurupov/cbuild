@@ -1,0 +1,11 @@
+{
+  "name": "Intel-64-Release",
+  "toolchain": "llvm",
+  "std": "latest",
+  "arch": "intel",
+  "register": "64",
+  "debug": "True",
+  "optimization": "0",
+  "additional_compile": [],
+  "additional_link": []
+}
