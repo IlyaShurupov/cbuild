@@ -34,6 +34,9 @@ class BaseProject:
 		self.sources = self.find_files(".", [".cpp"])
 		self.headers = self.find_files(".", [".hpp", ".h"])
 
+	def project_type(self) -> str:
+		return "None"
+
 	def find_files(self, relative_directory: str, extensions: list, recursive: bool = True) -> list:
 		extensions = ["." + ext if not ext.startswith(".") else ext for ext in extensions]
 		file_list = []
@@ -159,6 +162,9 @@ class LibraryProject(BaseProject):
 	def __init__(self):
 		super().__init__()
 
+	def project_type(self) -> str:
+		return "library"
+
 	def output_file(self, config):
 		return os.path.join(self.absolute_lib_dir(config), Toolchain.library_name(self.name))
 
@@ -193,6 +199,9 @@ class LibraryProject(BaseProject):
 class BinaryProject(BaseProject):
 	def __init__(self):
 		super().__init__()
+
+	def project_type(self) -> str:
+		return "application"
 
 	def output_file(self, config):
 		return os.path.join(self.absolute_bin_dir(config), Toolchain.executable_name(self.name))

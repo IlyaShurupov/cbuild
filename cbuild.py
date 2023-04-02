@@ -82,7 +82,15 @@ def get_config(args):
 
 
 def compile_cmd(args):
-	load_project(args["project-path"]).compile(get_config(args))
+	config = get_config(args)
+	project = load_project(args["project-path"])
+	project.compile(config)
+
+	if project.project_type() == "application":
+		link_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ExecutableLink")
+		if os.path.exists(link_path):
+			os.remove(link_path)
+		os.symlink(project.output_file(config), link_path)
 
 
 def recompile_cmd(args):
