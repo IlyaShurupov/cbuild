@@ -5,7 +5,7 @@ from pathlib import Path
 import Errors
 import Toolchain
 
-global_project_directory = "."
+global_project_path = "."
 
 
 def file_mod_time(path):
@@ -28,33 +28,41 @@ class BaseProject:
 		self.additional_include_dirs = []
 		self.additional_lib_dirs = []
 		self.additional_libraries = []
-		self.project_path = global_project_directory
+		self.project_path = global_project_path
+		self.project_dir = os.path.dirname(global_project_path)
 
-		self.add_files_from_directory()
+		self.sources = self.find_files(".", [".cpp"])
+		self.headers = self.find_files(".", [".hpp", ".h"])
 
-	def add_files_from_directory(self):
-		wd = self.push_wd()
-		for root, dirs, files in os.walk("."):
-			for filename in files:
-				if filename.endswith(".cpp") or filename.endswith(".c"):
-					if not any(d in root for d in self.ignore_directories):
-						self.sources.append(os.path.normpath(os.path.join(root, filename)))
-				elif filename.endswith(".h") or filename.endswith(".hpp"):
-					if not any(d in root for d in self.ignore_directories):
-						self.headers.append(os.path.normpath(os.path.join(root, filename)))
-		self.pop_wd(wd)
+	def find_files(self, relative_directory: str, extensions: list, recursive: bool = True) -> list:
+		extensions = ["." + ext if not ext.startswith(".") else ext for ext in extensions]
+		file_list = []
+		directory = os.path.join(self.project_dir, relative_directory)
+		for root, dirs, files in os.walk(directory):
+			for file in files:
+				if any(file.endswith(ext) for ext in extensions):
+					file_path = os.path.join(root, file)
+					if recursive or root == directory:
+						# Add the file path to the list of found files
+						file_list.append(os.path.relpath(file_path, self.project_dir))
+		return file_list
 
 	def load_dependencies(self, module_self):
 		wd = self.push_wd()
 		dependencies = []
 		for dep in self.dependencies:
+
 			# Load module
-			path = os.path.abspath(os.path.join(dep, "cproj.py"))
+			filename, extension = os.path.splitext(dep)
+			if extension == "":
+				dep += ".py"
+			path = os.path.abspath(dep)
+
 			spec = importlib.util.spec_from_file_location(path, path)
 			module = importlib.util.module_from_spec(spec)
 
 			# Pass arguments to the module and execute it
-			module.cbuild, module_self.global_project_directory = module_self, os.path.abspath(dep)
+			module.cbuild, module_self.global_project_path = module_self, path
 			spec.loader.exec_module(module)
 
 			# Initialize project and add it to dependencies
@@ -66,16 +74,16 @@ class BaseProject:
 		self.pop_wd(wd)
 
 	def absolute_lib_dir(self, config):
-		return os.path.join(self.project_path, self.library_output_directory, f"{self.name}-{config.name}")
+		return os.path.join(self.project_dir, self.library_output_directory, f"{self.name}-{config.name}")
 
 	def absolute_bin_dir(self, config):
-		return os.path.join(self.project_path, self.output_directory, f"{self.name}-{config.name}")
+		return os.path.join(self.project_dir, self.output_directory, f"{self.name}-{config.name}")
 
 	def absolute_temp_dir(self, config):
-		return os.path.join(self.project_path, self.temp_directory, f"{self.name}-{config.name}")
+		return os.path.join(self.project_dir, self.temp_directory, f"{self.name}-{config.name}")
 
 	def available_includes(self) -> list:
-		includes = [os.path.join(self.project_path, include_dir) for include_dir in self.public_directories]
+		includes = [os.path.join(self.project_dir, include_dir) for include_dir in self.public_directories]
 		for dep in self.dependencies:
 			includes += dep.available_includes()
 		return includes
@@ -96,7 +104,7 @@ class BaseProject:
 		wd = self.push_wd()
 
 		if self.success_time(config):
-			if self.success_time(config) < file_mod_time(os.path.join(global_project_directory, "cproj.py")):
+			if self.success_time(config) < file_mod_time(self.project_path):
 				Errors.log("Forcing rebuild of sources as project file has changed", 0)
 				forced = True
 
@@ -117,7 +125,7 @@ class BaseProject:
 		for source, output, time in zip(self.sources, outputs, source_times):
 			if forced or time > success_time:
 				toolchain.compile_object(source, output, includes, self.preprocessor_definitions, config)
-				Errors.log(f"{source} -> {os.path.relpath(output, self.project_path)}", 0)
+				Errors.log(f"{source} -> {os.path.relpath(output, self.project_dir)}", 0)
 				src_changed = True
 
 		self.pop_wd(wd)
@@ -140,7 +148,7 @@ class BaseProject:
 
 	def push_wd(self) -> str:
 		temp_wd = os.getcwd()
-		os.chdir(self.project_path)
+		os.chdir(self.project_dir)
 		return temp_wd
 
 	def pop_wd(self, wd: str):
@@ -176,7 +184,7 @@ class LibraryProject(BaseProject):
 			toolchain = Toolchain.get(config)
 			library_file = self.output_file(config)
 			toolchain.package_objects(objects, library_file, config)
-			Errors.log(f"{os.path.relpath(library_file, self.project_path)}", 0)
+			Errors.log(f"{os.path.relpath(library_file, self.project_dir)}", 0)
 
 		self.pop_wd(wd)
 		return self_api_changed, (self_lib_changed or dep_lib_changed)
@@ -225,14 +233,14 @@ class BinaryProject(BaseProject):
 			# create static library
 			library_output = os.path.join(self.absolute_lib_dir(config), Toolchain.library_name(self.name))
 			toolchain.package_objects(objects, library_output, config)
-			Errors.log(f"{os.path.relpath(library_output, self.project_path)}", 0)
+			Errors.log(f"{os.path.relpath(library_output, self.project_dir)}", 0)
 
 			# create executable
 			libraries, library_search_directories = self.available_libraries(config)
 			libraries.remove(Toolchain.library_name(self.name))
 			library_search_directories.remove(self.absolute_lib_dir(config))
 			toolchain.link_objects(objects, self.output_file(config), libraries, library_search_directories, config)
-			Errors.log(f"{os.path.relpath(self.output_file(config), self.project_path)}", 0)
+			Errors.log(f"{os.path.relpath(self.output_file(config), self.project_dir)}", 0)
 
 		self.pop_wd(wd)
 

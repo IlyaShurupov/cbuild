@@ -9,17 +9,19 @@ import Toolchain
 import json
 
 
-def load_project(directory):
-	module_file = os.path.join(directory, "cproj.py")
-	if not os.path.exists(module_file):
-		raise Errors.CBuildError(f"No project file in {directory}")
+def load_project(project_path):
+	if os.path.isdir(project_path):
+		raise Errors.CBuildError(f"\nSpecified working directory but expected project path. Given '{project_path}'")
+
+	if not os.path.exists(project_path):
+		raise Errors.CBuildError(f"No such project file {project_path}")
+
 	# load module
-	module_name = module_file
-	spec = importlib.util.spec_from_file_location(module_name, module_file)
+	spec = importlib.util.spec_from_file_location(project_path, project_path)
 	module = importlib.util.module_from_spec(spec)
 	# pass arguments to the module
 	module.cbuild = CbuildProjects
-	CbuildProjects.global_project_directory = os.path.abspath(directory)
+	CbuildProjects.global_project_path = os.path.abspath(project_path)
 	# execute module
 	spec.loader.exec_module(module)
 	# initialize project
@@ -30,16 +32,16 @@ def load_project(directory):
 
 def init_cmd(args):
 	current_file_dir = os.path.dirname(os.path.abspath(__file__))
-	directory = args["directory"]
+	project_path = os.path.join(os.path.abspath(args["directory"]), args["name"] + ".py")
+	directory = os.path.dirname(os.path.abspath(project_path))
 
-	project_file = os.path.join(directory, "cproj.py")
-	if os.path.exists(project_file):
+	if os.path.exists(project_path):
 		raise Errors.CBuildError("Project file already exists")
 
 	if not os.path.exists(directory):
 		os.makedirs(directory)
 
-	with open(project_file, "w") as f:
+	with open(project_path, "w") as f:
 		# Write the initial code to the file
 		project_type = getattr(CbuildProjects, args["type"].capitalize() + "Project")
 		project_sample_source = open(os.path.join(current_file_dir, 'cproj.py'), 'r').read()
@@ -67,12 +69,12 @@ def init_cmd(args):
 
 
 def get_config(args):
+	directory = os.path.dirname(args["project-path"])
 	config = BuildConfiguration.CompilationProperties()
-	cbuild_config = os.path.join(os.path.dirname(os.path.abspath(__file__)), args["cfg"] + ".json")
-	user_config = os.path.join(args["directory"], args["cfg"] + ".json")
+	user_config = os.path.join(directory, args["cfg"] + ".json")
 
 	if os.path.exists(user_config):
-		config.load(args["directory"], args["cfg"])
+		config.load(directory, args["cfg"])
 	else:
 		config.load(os.path.dirname(os.path.abspath(__file__)), args["cfg"])
 
@@ -80,64 +82,73 @@ def get_config(args):
 
 
 def compile_cmd(args):
-	load_project(args["directory"]).compile(get_config(args))
+	load_project(args["project-path"]).compile(get_config(args))
 
 
 def recompile_cmd(args):
-	load_project(args["directory"]).compile(get_config(args), True)
+	load_project(args["project-path"]).compile(get_config(args), True)
 
 
 def run_cmd(args):
-	project = load_project(args["directory"])
+	project = load_project(args["project-path"])
 	cfg = get_config(args)
 	project.compile(cfg)
 	project.run(cfg)
 
 
 def debug_cmd(args):
-	project = load_project(args["directory"])
+	project = load_project(args["project-path"])
 	cfg = get_config(args)
 	project.compile(cfg)
 	project.debug(cfg)
 
 
 def clear_cmd(args):
-	load_project(args["directory"]).clear(get_config(args))
+	load_project(args["project-path"]).clear(get_config(args))
 
 
 def make_cfg_cmd(args):
 	cfg = BuildConfiguration.CompilationProperties()
 	cfg.read()
 	name = input("Configuration name:")
-	cfg.save(args["directory"], name)
+	cfg.save(os.path.dirname(args["project-path"]), name)
 
 
 def set_cfg_cmd(args):
-	file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "DefaultConfig.json")
+	file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "CBuildContext.json")
+
+	project_path = os.path.abspath(args["project-path"])
+	filename, extension = os.path.splitext(project_path)
+	if extension == "":
+		project_path += ".py"
+	project_path = os.path.abspath(project_path)
+
 	with open(file_path, 'w') as file:
-		json.dump({"default-config": args["cfg"]}, file)
+		json.dump({"config": args["cfg"], "project": project_path}, file)
 
 
 commands = {}
 
 
-def initialize_commands():
+def initialize_context():
 	global commands
 
-	default_config_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "DefaultConfig.json")
+	default_config_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "CBuildContext.json")
 	with open(default_config_file) as f:
 		config = json.load(f)
-	default_config_name = config["default-config"]
+
+	default_config_name = config["config"]
+	default_project_path = config["project"]
 
 	commands = {
-		"init": {"exec": init_cmd, "args": {"name": None, "type": None, "add-files": "False"}},
-		"configure": {"exec": make_cfg_cmd, "args": {}},
-		"compile": {"exec": compile_cmd, "args": {"cfg": default_config_name}},
-		"clear": {"exec": clear_cmd, "args": {"cfg": default_config_name}},
-		"recompile": {"exec": recompile_cmd, "args": {"cfg": default_config_name}},
-		"run": {"exec": run_cmd, "args": {"cfg": default_config_name}},
-		"debug": {"exec": debug_cmd, "args": {"cfg": default_config_name}},
-		"set-default-config": {"exec": set_cfg_cmd, "args": {"cfg": None}},
+		"init": {"exec": init_cmd, "args": {"directory": None, "name": None, "type": None, "add-files": "False"}},
+		"configure": {"exec": make_cfg_cmd, "args": {"project-path": default_project_path}},
+		"compile": {"exec": compile_cmd, "args": {"project-path": default_project_path, "cfg": default_config_name}},
+		"clear": {"exec": clear_cmd, "args": {"project-path": default_project_path, "cfg": default_config_name}},
+		"recompile": {"exec": recompile_cmd, "args": {"project-path": default_project_path, "cfg": default_config_name}},
+		"run": {"exec": run_cmd, "args": {"project-path": default_project_path, "cfg": default_config_name}},
+		"debug": {"exec": debug_cmd, "args": {"project-path": default_project_path, "cfg": default_config_name}},
+		"set-default-config": {"exec": set_cfg_cmd, "args": {"project-path": None, "cfg": None}},
 	}
 
 
@@ -173,14 +184,10 @@ def commands_descr() -> str:
 
 
 def parse_command(cmd_args):
-	if len(cmd_args) < 2:
-		raise Errors.CBuildError("\nInvalid invocation. Must be <working-directory> <command-name> <arg-1> ... <arg-n>")
+	if len(cmd_args) == 0:
+		raise Errors.CBuildError("\nInvalid invocation. Must be <command-name> <arg-1> ... <arg-n>")
 
-	directory = cmd_args[0]
-	if not os.path.exists(directory):
-		raise Errors.CBuildError(f"\nSpecified working directory does not exists. Given '{directory}'")
-
-	command = cmd_args[1]
+	command = cmd_args[0]
 	if not (command in commands):
 		for name, val in command_macros.items():
 			for macro in val:
@@ -192,7 +199,7 @@ def parse_command(cmd_args):
 			raise Errors.CBuildError(f"\nCant resolve command.\n {commands_descr()}")
 
 	args = {}
-	args_passed = [arg for arg in cmd_args[2:]]
+	args_passed = [arg for arg in cmd_args[1:]]
 	for arg_name, arg_val in commands[command]["args"].items():
 		if not(arg_val is None):
 			if not len(args_passed):
@@ -208,7 +215,6 @@ def parse_command(cmd_args):
 	if len(args_passed):
 		raise Errors.CBuildError(f"\nToo many arguments given:\n for command: {command_descr(command, commands[command])}")
 
-	args["directory"] = directory
 	return {"command": command, "args": args}
 
 
@@ -228,5 +234,5 @@ def run():
 		Errors.err(f"Unsuccessful run : {error}")
 
 
-initialize_commands()
+initialize_context()
 run()
